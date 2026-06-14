@@ -61,6 +61,8 @@ public class SokoBot {
       for (State neighbor : current.getValidMoves(mapData, width, height)) {
         if (closed.contains(neighbor)) continue;
 
+        if (isDeadlock(neighbor, mapData)) continue; // To check Deadlock States L states
+
         int newG = currentG + 1;
         Integer knownG = bestG.get(neighbor);
         if (knownG != null && newG >= knownG) continue;
@@ -88,4 +90,35 @@ public class SokoBot {
     }
     return total;
   }
+
+  private boolean isDeadlock(State state, char[][] map) {
+    for (int packed : state.crates) {
+        int x = packed / 1000;
+        int y = packed % 1000;
+
+        // Checks if crate is on goal
+        if (map[y][x] == '.') continue;
+
+        //Check if each direction is blocked by a wall either up,down,left or right
+        boolean up = isWall(map, x, y - 1);
+        boolean down = isWall(map, x, y + 1);
+        boolean left = isWall(map, x - 1, y);
+        boolean right = isWall(map, x + 1, y);
+
+        // L shape deadlock: crate is against two walls that are perpendicular
+        if ((up || down) && (left || right)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Just a helper function to check if a cell is a wall or out of bounds
+private boolean isWall(char[][] map, int x, int y) {
+    if (y < 0 || y >= map.length || x < 0 || x >= map[0].length) {
+        return true;
+    }
+    return map[y][x] == '#';
+}
+
 }
