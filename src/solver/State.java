@@ -1,168 +1,128 @@
 package solver;
 
-import java.util.HashSet;
-import java.util.Set;
- 
+// MODIFIED: Replaced Set and HashSet imports with Arrays, ArrayList, Collections, and List for primitive arrays and string processing.
+import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
 /**
  * Represents a single state of the Sokoban puzzle: where the player is,
  * and where all the crates are. Immutable - moving produces a new State.
+ * * // MODIFIED: Added `implements Comparable<State>` so it can be sorted in SokoBot's A* PriorityQueue.
  */
-public class State {
- 
+public class State implements Comparable<State> {
+
     // Player position
     public final int playerX;
     public final int playerY;
- 
+
     // Crate positions, stored as a set of packed coordinates (x * 1000 + y)
     // Using a set gives O(1) lookups for "is there a crate at (x,y)?"
-    public final Set<Integer> crates;
- 
+    // MODIFIED: Changed from Set<Integer> to a primitive int[] array for better memory performance.
+    // It now uses 1D representation (row * width + col) and O(log N) binary search instead of an object Set.
+    public final int[] crates;
+
     // The move taken to reach this state from its parent ('u','d','l','r'), or
     // '\0' for the root/start state.
-    public final char move;
- 
+    // MODIFIED: Changed from 'char' to 'String' to hold SokoBot's multi-step macro-moves.
+    public final String move;
+
     // The parent state, used to reconstruct the solution path. Null for the
     // start state.
     public final State parent;
- 
-    public State(int playerX, int playerY, Set<Integer> crates, char move, State parent) {
+
+    // MODIFIED: Added A* Search Extensions previously found in SokoBot's inner classes.
+    public final int g;            // Actual cost from start to this state
+    public final int h;            // Heuristic estimate to goal
+    public final int f;            // Total estimated cost (g + 4*h)
+
+    // MODIFIED: Added normalizedPlayer for advanced equivalence checking in SokoBot's Closed Map.
+    public int normalizedPlayer;
+
+    // MODIFIED: Constructor signature updated to handle the primitive array, A* weights, and String macro moves.
+    public State(int playerX, int playerY, int[] crates, int g, int h, State parent, String move) {
         this.playerX = playerX;
         this.playerY = playerY;
         this.crates = crates;
         this.move = move;
         this.parent = parent;
+
+        // MODIFIED: Initialize A* tracking variables.
+        this.g = g;
+        this.h = h;
+        this.f = g + (4 * h); // WEIGHTED A*: Matches SokoBot's original heuristic weight
+
+        // Default fallback for normalization
+        this.normalizedPlayer = playerY * 1000 + playerX;
     }
- 
-    /** Helper to pack an (x, y) coordinate into a single int key for the set. */
-    public static int pack(int x, int y) {
-        return x * 1000 + y;
+
+    // MODIFIED: Removed the static 'pack' method because SokoBot inherently uses 1D coordinate conversions natively (y * width + x).
+
+    // MODIFIED: Added this helper to replace Set lookups with high-speed binary search on the primitive array.
+    public boolean hasCrateAt(int x, int y, int width) {
+        return Arrays.binarySearch(crates, y * width + x) >= 0;
     }
- 
-    public boolean hasCrateAt(int x, int y) {
-        return crates.contains(pack(x, y));
-    }
- 
-    /**
-     * Returns true if (x, y) is a wall in the map.
-     * Bounds-checked so we never index out of range.
-     */
-    private boolean isWall(char[][] mapData, int width, int height, int x, int y) {
-        if (x < 0 || y < 0 || y >= height || x >= width) {
-            return true; // treat out-of-bounds as a wall
+
+    // MODIFIED: Added compareTo method to fulfill the Comparable interface required by SokoBot's PriorityQueue.
+    @Override
+    public int compareTo(State other) {
+        int cmp = Integer.compare(this.f, other.f);
+        if (cmp == 0) {
+            return Integer.compare(other.g, this.g);
         }
-        return mapData[y][x] == '#';
+        return cmp;
     }
- 
-    /**
-     * Generates all states reachable from this one via a single player move,
-     * respecting wall collisions and crate-pushing rules.
-     *
-     * Movement deltas:
-     *   'u' -> (0, -1)
-     *   'd' -> (0, +1)
-     *   'l' -> (-1, 0)
-     *   'r' -> (+1, 0)
-     *
-     * For each direction:
-     *   - The target cell (where the player would move to) must not be a wall.
-     *   - If the target cell has a crate, the cell beyond it (in the same
-     *     direction) must be free (not a wall and not also occupied by another
-     *     crate). If so, the crate is pushed and the player moves into the
-     *     crate's old position.
-     *   - If the target cell is empty (no wall, no crate), the player simply
-     *     moves there.
-     */
-    public Set<State> getValidMoves(char[][] mapData, int width, int height) {
-        Set<State> nextStates = new HashSet<>();
- 
-        char[] dirs = {'u', 'd', 'l', 'r'};
-        int[] dx = {0, 0, -1, 1};
-        int[] dy = {-1, 1, 0, 0};
- 
-        for (int i = 0; i < dirs.length; i++) {
-            int newX = playerX + dx[i];
-            int newY = playerY + dy[i];
- 
-            // Can't move into a wall
-            if (isWall(mapData, width, height, newX, newY)) {
-                continue;
-            }
- 
-            if (hasCrateAt(newX, newY)) {
-                // Trying to push a crate: check the cell beyond it
-                int beyondX = newX + dx[i];
-                int beyondY = newY + dy[i];
- 
-                if (isWall(mapData, width, height, beyondX, beyondY)) {
-                    continue; // crate would be pushed into a wall
-                }
-                if (hasCrateAt(beyondX, beyondY)) {
-                    continue; // crate would be pushed into another crate
-                }
- 
-                // Valid push: move the crate from (newX, newY) to (beyondX, beyondY)
-                Set<Integer> newCrates = new HashSet<>(crates);
-                newCrates.remove(pack(newX, newY));
-                newCrates.add(pack(beyondX, beyondY));
- 
-                nextStates.add(new State(newX, newY, newCrates, dirs[i], this));
-            } else {
-                // Simple move, no crate involved
-                nextStates.add(new State(newX, newY, crates, dirs[i], this));
-            }
-        }
- 
-        return nextStates;
-    }
- 
-    /**
-     * Reconstructs the move sequence (e.g. "ulldr") from the start state to
-     * this state by walking up the parent chain and reversing it.
-     */
-    public String reconstructPath() {
-        StringBuilder sb = new StringBuilder();
-        State current = this;
-        while (current.parent != null) {
-            sb.append(current.move);
-            current = current.parent;
-        }
-        return sb.reverse().toString();
-    }
- 
-    /**
-     * Checks whether all crates are on target cells. mapData should contain
-     * '.' for target locations.
-     */
-    public boolean isGoal(char[][] mapData) {
-        for (int packed : crates) {
-            int x = packed / 1000;
-            int y = packed % 1000;
-            if (mapData[y][x] != '.') {
-                return false;
-            }
-        }
-        return true;
-    }
- 
+
+    // MODIFIED: Removed isGoal(char[][] mapData) method entirely.
+    // SokoBot.java checks the goal state much faster by directly comparing the int[] crates array to an int[] targets array using Arrays.equals().
+
     /**
      * Equality and hashCode are based on player position + crate positions,
      * since that fully determines a Sokoban state. This lets HashSet-based
      * visited/closed sets (used by BFS/A*) correctly detect duplicate states.
+     * // MODIFIED: Overhauled equals() and hashCode() to use SokoBot's `normalizedPlayer`
+     *              instead of exact `playerX`/`playerY`. Also updated to compare primitive arrays via Arrays.equals().
      */
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
         if (!(o instanceof State)) return false;
         State other = (State) o;
-        return playerX == other.playerX
-                && playerY == other.playerY
-                && crates.equals(other.crates);
+
+        // MODIFIED: We use normalizedPlayer instead of strict x/y, because if a player
+        // can walk freely to another tile without pushing a box, the states are functionally identical.
+        return this.normalizedPlayer == other.normalizedPlayer
+                && Arrays.equals(this.crates, other.crates);
     }
- 
+
     @Override
     public int hashCode() {
-        int result = 31 * playerX + playerY;
-        result = 31 * result + crates.hashCode();
-        return result;
+        // MODIFIED: Re-written to hash primitive arrays and the normalized player id.
+        return 31 * normalizedPlayer + Arrays.hashCode(crates);
+    }
+
+    /**
+     * Traverses the parent chain and reversing it.
+     * MODIFIED: Updated from char appending to String appending to handle SokoBot's macro moves.
+     */
+    public String reconstructPath() {
+        List<String> steps = new ArrayList<>();
+        State current = this;
+
+        // MODIFIED: Safe null/empty checks added for the macro-move string at the root.
+        while (current != null && current.move != null && !current.move.isEmpty()) {
+            steps.add(current.move);
+            current = current.parent;
+        }
+
+        // MODIFIED: Replaced StringBuilder reverse with Collections.reverse() since we are reversing
+        // whole string blocks (macro-moves) rather than individual characters.
+        Collections.reverse(steps);
+        StringBuilder sb = new StringBuilder();
+        for (String s : steps) {
+            sb.append(s);
+        }
+        return sb.toString();
     }
 }
